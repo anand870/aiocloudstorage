@@ -1,4 +1,5 @@
-from cloudstorage.utils import rgetattr, rsetattr
+from aiocloudstorage.utils import rgetattr, rsetattr
+import pytest
 
 
 def test_rgetattr():
@@ -12,3 +13,4 @@ def test_rsetattr():
     a = type('A', (), {'b': b})()
     rsetattr(a, 'b.c', False)
     assert not a.b.c
+

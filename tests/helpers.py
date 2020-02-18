@@ -1,7 +1,9 @@
 import random
 import string
 import time
+import io
 from functools import wraps
+from random import randint
 from urllib.parse import urlparse
 
 from tests.settings import CONTAINER_PREFIX
@@ -35,3 +37,13 @@ def rate_limited(delay: int = 1):
         return rate_limited_function
 
     return decorate
+
+def binary_iostreams(count=10):
+    files = {}
+    for i in range(count):
+        data = b'\x01'*1024*randint(1,10)
+        files[i] = io.BytesIO(data)
+    return files
+
+
+

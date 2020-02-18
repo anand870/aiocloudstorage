@@ -87,7 +87,7 @@ class GoogleStorageDriver(Driver):
     hash_type = 'md5'  # TODO: QUESTION: Switch to crc32c?
     url = 'https://cloud.google.com/storage'
 
-    def __init__(self, key: str = None, **kwargs: Dict) -> None:
+    def __init__(self, key: str = None, alias_name="gcs",**kwargs: Dict) -> None:
         super().__init__(key=key, **kwargs)
 
         if key:

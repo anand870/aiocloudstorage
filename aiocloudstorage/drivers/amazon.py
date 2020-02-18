@@ -1,21 +1,23 @@
 """Amazon Simple Storage Service (S3) Driver."""
 import logging
+import asyncio
+import warnings
 from typing import Any, Dict, Iterable, List  # noqa: F401
 from urllib.parse import quote, urljoin
 
-import boto3
+import aiobotocore
 from botocore.exceptions import ClientError, ParamValidationError, WaiterError
-from inflection import camelize, underscore
+from aiocloudstorage.utils import camelize, underscore
 
-from cloudstorage import Blob, Container, Driver, messages
-from cloudstorage.exceptions import (
+from aiocloudstorage import Blob, Container, Driver, messages
+from aiocloudstorage.exceptions import (
     CloudStorageError,
     CredentialsError,
     IsNotEmptyError,
     NotFoundError,
 )
-from cloudstorage.helpers import file_content_type, validate_file_or_path
-from cloudstorage.typed import (
+from aiocloudstorage.helpers import file_content_type, validate_file_or_path
+from aiocloudstorage.typed import (
     ContentLength,
     ExtraOptions,
     FileLike,
@@ -27,13 +29,17 @@ __all__ = ['S3Driver']
 
 logger = logging.getLogger(__name__)
 
+class Bucket(object):
+    def __init__(self,Name,CreationDate=None):
+        self.name = Name
+        self.creation_date = CreationDate
 
 class S3Driver(Driver):
     """Driver for interacting with Amazon Simple Storage Service (S3).
 
     .. code-block:: python
 
-        from cloudstorage.drivers.amazon import S3Driver
+        from aiocloudstorage.drivers.amazon import S3Driver
 
         storage = S3Driver(key='<my-aws-access-key-id>',
                    secret='<my-aws-secret-access-key>',
@@ -63,26 +69,41 @@ class S3Driver(Driver):
     hash_type = 'md5'
     url = 'https://aws.amazon.com/s3/'
 
-    def __init__(self, key: str, secret: str = None, region: str = 'us-east-1',
+    def __init__(self, endpoint_url:str, key: str, secret: str = None, region: str = 'us-east-1',alias_name="s3",
                  **kwargs: Dict) -> None:
         region = region.lower()
+        self.endpoint_url = endpoint_url
         super().__init__(key=key, secret=secret, region=region, **kwargs)
 
-        self._session = boto3.Session(aws_access_key_id=key,
-                                      aws_secret_access_key=secret,
-                                      region_name=region)
+        self._session = None
+        #self._session = boto3.Session(aws_access_key_id=key,
+        #                              aws_secret_access_key=secret,
+        #                              region_name=region)
 
         # session required for loading regions list
-        if region not in self.regions:
-            raise CloudStorageError(messages.REGION_NOT_FOUND % region)
+        #if region not in self.regions:
+        #    raise CloudStorageError(messages.REGION_NOT_FOUND % region)
+    def s3(self):
+        """
+        Usage
+        async with self.s3() as s3:
+            s3.dosomething
+        """
+        client  = self.session.create_client('s3',
+                region_name=self.region,
+                endpoint_url=self.endpoint_url,
+                aws_access_key_id=self.key,
+                aws_secret_access_key=self.secret
+            )
+        return client
 
-    def __iter__(self) -> Iterable[Container]:
-        for bucket in self.s3.buckets.all():
-            yield self._make_container(bucket)
+    @property
+    def session(self):
+        if not self._session:
+            loop = asyncio.get_running_loop()
+            self._session = aiobotocore.get_session(loop=loop)
+        return self._session
 
-    def __len__(self) -> int:
-        buckets = [bucket for bucket in self.s3.buckets.all()]
-        return len(buckets)
 
     @staticmethod
     def _normalize_parameters(params: Dict[str, str],
@@ -102,8 +123,16 @@ class S3Driver(Driver):
                 normalized[key_overrider] = value
 
         return normalized
+    def _make_bucket(self,info:Dict) -> Bucket:
+        return Bucket(**info)
 
-    def _get_bucket(self, bucket_name: str, validate: bool = True):
+    async def _list_buckets(self):
+        async with self.s3() as s3:
+            resp = await s3.list_buckets()
+            for info in resp.get('Buckets',[]):
+                yield self._make_bucket(info)
+
+    async def _get_bucket(self, bucket_name: str, validate: bool = True):
         """Get a S3 bucket.
 
         :param bucket_name: The Bucket's name identifier.
@@ -118,12 +147,12 @@ class S3Driver(Driver):
         :raises NotFoundError: If the bucket does not exist.
         :raises CloudStorageError: Boto 3 client error.
         """
-        bucket = self.s3.Bucket(bucket_name)
 
         if validate:
             try:
-                response = self.s3.meta.client.head_bucket(Bucket=bucket_name)
-                logger.debug('response=%s', response)
+                async with self.s3() as s3:
+                    response = await s3.head_bucket(Bucket=bucket_name)
+                    logger.debug('response=%s', response)
             except ClientError as err:
                 error_code = int(err.response['Error']['Code'])
                 if error_code == 404:
@@ -134,12 +163,8 @@ class S3Driver(Driver):
                     err.response['Error']['Code'],
                     err.response['Error']['Message']))
 
-            try:
-                bucket.wait_until_exists()
-            except WaiterError as err:
-                logger.error(err)
-
-        return bucket
+        return Bucket(bucket_name)
+    #async def _list_buckets(self) -> List
 
     def _make_blob(self, container: Container, object_summary) -> Blob:
         """Convert S3 Object Summary to Blob instance.
@@ -188,7 +213,7 @@ class S3Driver(Driver):
                     created_at=created_at, modified_at=modified_at,
                     expires_at=expires_at)
 
-    def _make_container(self, bucket) -> Container:
+    def _make_container(self, bucket: Bucket) -> Container:
         """Convert S3 Bucket to Container.
 
         :param bucket: S3 bucket object.
@@ -197,87 +222,22 @@ class S3Driver(Driver):
         :return: The container if it exists.
         :rtype: :class:`.Container`
         """
-        acl = bucket.Acl()
-        created_at = bucket.creation_date.astimezone(tz=None)
-        return Container(name=bucket.name, driver=self, acl=acl,
-                         meta_data=None, created_at=created_at)
+        return Container(name=bucket.name, driver=self,
+                         meta_data=None)
 
-    @property
-    def session(self) -> boto3.session.Session:
-        """Amazon Web Services session.
+    async def get_container(self, container_name: str) -> Container:
+        bucket = await self._get_bucket(container_name)
+        return self._make_container(bucket.name)
 
-        :return: AWS session.
-        :rtype: :class:`boto3.session.Session`
-        """
-        return self._session
-
-    # noinspection PyUnresolvedReferences
-    @property
-    def s3(self) -> boto3.resources.base.ServiceResource:
-        """S3 service resource.
-
-        :return: The s3 resource instance.
-        :rtype: :class:`boto3.resources.base.ServiceResource`
-        """
-        return self.session.resource(service_name='s3', region_name=self.region)
-
-    def validate_credentials(self) -> None:
-        try:
-            self.session.client('sts').get_caller_identity()
-        except ClientError as err:
-            raise CredentialsError(str(err))
-
-    @property
-    def regions(self) -> List[str]:
-        return self.session.get_available_regions('s3')
-
-    def create_container(self, container_name: str, acl: str = None,
-                         meta_data: MetaData = None) -> Container:
-        if meta_data:
-            logger.info(messages.OPTION_NOT_SUPPORTED, 'meta_data')
-
-        # Required parameters
-        params = {
-            'Bucket': container_name,
-        }  # type: Dict[Any, Any]
-
-        if acl:
-            params['ACL'] = acl.lower()
-
-        # TODO: BUG: Creating S3 bucket in us-east-1
-        # See https://github.com/boto/boto3/issues/125
-        if self.region != 'us-east-1':
-            params['CreateBucketConfiguration'] = {
-                'LocationConstraint': self.region,
-            }
-
-        logger.debug('params=%s', params)
-
-        try:
-            bucket = self.s3.create_bucket(**params)
-        except ParamValidationError as err:
-            msg = err.kwargs.get('report', messages.CONTAINER_NAME_INVALID)
-            raise CloudStorageError(msg)
-
-        try:
-            bucket.wait_until_exists()
-        except WaiterError as err:
-            logger.error(err)
-
-        return self._make_container(bucket)
-
-    def get_container(self, container_name: str) -> Container:
-        bucket = self._get_bucket(container_name)
-        return self._make_container(bucket)
+    #async def get_containers(self, container_name: str) -> List[Container]:
 
     def patch_container(self, container: Container) -> None:
         raise NotImplementedError
 
-    def delete_container(self, container: Container) -> None:
-        bucket = self._get_bucket(container.name, validate=False)
-
+    async def delete_container(self, container: Container) -> None:
         try:
-            bucket.delete()
+            async with self.s3() as s3:
+                s3.delete_bucket(Bucket=container.name)
         except ClientError as err:
             error_code = err.response['Error']['Code']
             if error_code == 'BucketNotEmpty':
@@ -285,8 +245,9 @@ class S3Driver(Driver):
                                       bucket.name)
             raise
 
-    def container_cdn_url(self, container: Container) -> str:
-        bucket = self._get_bucket(container.name, validate=False)
+    async def container_cdn_url(self, container: Container) -> str:
+        warnings.warn("Not tested yet")
+        bucket = await self._get_bucket(container.name, validate=False)
         endpoint_url = bucket.meta.client.meta.endpoint_url
         return '%s/%s' % (endpoint_url, container.name)
 
@@ -298,7 +259,7 @@ class S3Driver(Driver):
         logger.warning(messages.FEATURE_NOT_SUPPORTED, 'disable_container_cdn')
         return False
 
-    def upload_blob(self, container: Container, filename: FileLike,
+    async def upload_blob(self, container: Container, filename: FileLike,
                     blob_name: str = None, acl: str = None,
                     meta_data: MetaData = None, content_type: str = None,
                     content_disposition: str = None, cache_control: str = None,
@@ -309,7 +270,7 @@ class S3Driver(Driver):
 
         extra_args = self._normalize_parameters(extra, self._PUT_OBJECT_KEYS)
 
-        config = boto3.s3.transfer.TransferConfig(io_chunksize=chunk_size)
+        #config = boto3.s3.transfer.TransferConfig(io_chunksize=chunk_size)
 
         # Default arguments
         extra_args.setdefault('Metadata', meta_data)
@@ -338,28 +299,25 @@ class S3Driver(Driver):
 
         logger.debug('extra_args=%s', extra_args)
 
-        if isinstance(filename, str):
-            self.s3.Bucket(container.name).upload_file(Filename=filename,
-                                                       Key=blob_name,
-                                                       ExtraArgs=extra_args,
-                                                       Config=config)
-        else:
-            self.s3.Bucket(container.name).upload_fileobj(Fileobj=filename,
-                                                          Key=blob_name,
-                                                          ExtraArgs=extra_args,
-                                                          Config=config)
+        async with self.s3() as s3:
+            if isinstance(filename, str):
+                with open(filename,'rb') as f:
+                    await s3.put_object(Key=blob_name,Body=f,Bucket=container.name,**extra_args)
+            else:
+                await s3.put_object(Key=blob_name,Body=filename,Bucket=container.name,**extra_args)
 
-        return self.get_blob(container, blob_name)
+        return await self.get_blob(container, blob_name)
 
     def get_blob(self, container: Container, blob_name: str) -> Blob:
         object_summary = self.s3.ObjectSummary(bucket_name=container.name,
                                                key=blob_name)
         return self._make_blob(container, object_summary)
 
-    def get_blobs(self, container: Container) -> Iterable[Blob]:
-        bucket = self._get_bucket(container.name, validate=False)
+    async def get_blobs(self, container: Container) -> Iterable[Blob]:
+        bucket = await self._get_bucket(container.name, validate=False)
         for key in bucket.objects.all():  # s3.ObjectSummary
             yield self._make_blob(container, key)
+
 
     def download_blob(self, blob: Blob,
                       destination: FileLike) -> None:

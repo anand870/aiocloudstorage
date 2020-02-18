@@ -13,23 +13,25 @@ from typing import Dict, Iterable, List
 import filelock
 import itsdangerous
 import xattr
-from inflection import underscore
 
-from cloudstorage import Blob, Container, Driver, messages
-from cloudstorage.exceptions import (
+from aiocloudstorage import Blob, Container, Driver, messages
+from aiocloudstorage.utils import camelize, underscore
+from aiocloudstorage.exceptions import (
     CloudStorageError,
     CredentialsError,
     IsNotEmptyError,
     NotFoundError,
     SignatureExpiredError,
 )
-from cloudstorage.helpers import (
+from aiocloudstorage.helpers import (
     file_checksum,
     file_content_type,
     read_in_chunks,
     validate_file_or_path,
+    is_valid_bucket_name,
+    clean_object_name
 )
-from cloudstorage.typed import (
+from aiocloudstorage.typed import (
     ContentLength,
     ExtraOptions,
     FileLike,
@@ -76,7 +78,7 @@ class LocalDriver(Driver):
 
     .. code-block:: python
 
-        from cloudstorage.drivers.local import LocalDriver
+        from aiocloudstorage.drivers.local import LocalDriver
 
         path = '/home/user/webapp/storage'
         storage = LocalDriver(key=path, secret='<my-secret>', salt='<my-salt>')
@@ -108,16 +110,17 @@ class LocalDriver(Driver):
     hash_type = 'md5'
     url = ''
 
-    def __init__(self, key: str, secret: str = None, salt: str = None,
+    def __init__(self, endpoint: str, secret: str = None, salt: str = None,alias_name="fs",
                  **kwargs: Dict) -> None:
-        super().__init__(key, secret, **kwargs)
+        super().__init__(endpoint, secret, **kwargs)
 
-        self.base_path = key
+        self.alias_name = alias_name
+        self.base_path = endpoint
         self.salt = salt
 
         try:
-            if not os.path.exists(key):
-                os.makedirs(key)
+            if not os.path.exists(endpoint):
+                os.makedirs(endpoint)
         except PermissionError as err:
             raise CredentialsError(str(err))
 
@@ -376,8 +379,13 @@ class LocalDriver(Driver):
     def regions(self) -> List[str]:
         return []
 
-    def create_container(self, container_name: str, acl: str = None,
+    async def get_containers(self) -> List[Container]:
+        for container_name in self._get_folders():
+            yield self._make_container(container_name)
+
+    async def create_container(self, container_name: str, acl: str = None,
                          meta_data: MetaData = None) -> Container:
+        is_valid_bucket_name(container_name,strict=True)
         if acl:
             logger.info(messages.OPTION_NOT_SUPPORTED, 'acl')
 
@@ -395,37 +403,32 @@ class LocalDriver(Driver):
 
         return self._make_container(container_name)
 
-    def get_container(self, container_name: str) -> Container:
+    async def get_container(self, container_name: str) -> Container:
         return self._make_container(container_name)
 
-    def patch_container(self, container: Container) -> None:
-        raise NotImplementedError
 
-    def delete_container(self, container: Container) -> None:
-        for _ in self.get_blobs(container):
-            raise IsNotEmptyError(messages.CONTAINER_NOT_EMPTY % container.name)
+    async def delete_container(self, container: Container) -> None:
+        try:
+            async for _ in self.get_blobs(container):
+                raise IsNotEmptyError(messages.CONTAINER_NOT_EMPTY % container.name)
 
-        path = self._get_folder_path(container, validate=True)
+            path = self._get_folder_path(container, validate=True)
+        except NotFoundError as err:
+            return False
 
         with lock_local_file(path):
             try:
                 shutil.rmtree(path)
             except shutil.Error as err:
                 raise CloudStorageError(err.strerror)
+        return True
 
-    def container_cdn_url(self, container: Container) -> str:
+    async def container_cdn_url(self, container: Container) -> str:
         return self._get_folder_path(container)
 
-    def enable_container_cdn(self, container: Container) -> bool:
-        logger.warning(messages.FEATURE_NOT_SUPPORTED, 'enable_container_cdn')
-        return False
 
-    def disable_container_cdn(self, container: Container) -> bool:
-        logger.warning(messages.FEATURE_NOT_SUPPORTED, 'disable_container_cdn')
-        return False
-
-    def upload_blob(self, container: Container, filename: FileLike,
-                    blob_name: str = None, acl: str = None,
+    async def upload_blob(self, container: Container, filename: FileLike,
+                    blob_name: str = None,blob_path='', acl: str = None,
                     meta_data: MetaData = None, content_type: str = None,
                     content_disposition: str = None, cache_control: str = None,
                     chunk_size: int = 1024, extra: ExtraOptions = None) -> Blob:
@@ -443,7 +446,9 @@ class LocalDriver(Driver):
         path = self._get_folder_path(container, validate=True)
 
         blob_name = blob_name or validate_file_or_path(filename)
-        blob_path = os.path.join(path, blob_name)
+        blob_name = os.path.join(blob_path,blob_name)
+        blob_name=clean_object_name(blob_name)
+        blob_path = os.path.join(path,blob_name)
 
         base_path = os.path.dirname(blob_path)
         self._make_path(base_path)
@@ -467,12 +472,12 @@ class LocalDriver(Driver):
         # Set meta data and other attributes
         self._set_file_attributes(blob_path, attributes)
 
-        return self.get_blob(container, blob_name)
+        return await self.get_blob(container, blob_name)
 
-    def get_blob(self, container: Container, blob_name: str) -> Blob:
+    async def get_blob(self, container: Container, blob_name: str) -> Blob:
         return self._make_blob(container, blob_name)
 
-    def get_blobs(self, container: Container) -> Iterable[Blob]:
+    async def get_blobs(self, container: Container) -> Iterable[Blob]:
         container_path = self._get_folder_path(container, validate=True)
 
         for folder, sub_folders, files in os.walk(container_path, topdown=True):
@@ -483,10 +488,10 @@ class LocalDriver(Driver):
 
             for name in files:
                 full_path = os.path.join(folder, name)
-                object_name = pathlib.Path(full_path).name
+                object_name = str(pathlib.Path(full_path).relative_to(container_path))
                 yield self._make_blob(container, object_name)
 
-    def download_blob(self, blob: Blob,
+    async def download_blob(self, blob: Blob,
                       destination: FileLike) -> None:
         blob_path = self._get_file_path(blob)
 
@@ -506,10 +511,8 @@ class LocalDriver(Driver):
                 for data in read_in_chunks(blob_file):
                     destination.write(data)
 
-    def patch_blob(self, blob: Blob) -> None:
-        raise NotImplementedError
 
-    def delete_blob(self, blob: Blob) -> None:
+    async def delete_blob(self, blob: Blob) -> None:
         path = self._get_file_path(blob)
 
         with lock_local_file(path):
@@ -517,6 +520,7 @@ class LocalDriver(Driver):
                 os.unlink(path)
             except OSError as err:
                 logger.exception(err)
+        return None
 
     def blob_cdn_url(self, blob: Blob) -> str:
         return os.path.join(self.base_path, blob.container.name, blob.name)
@@ -582,6 +586,9 @@ class LocalDriver(Driver):
 
         signature = serializer.dumps(payload)
         return str(signature)
+
+    def patch_blob(self, blob: Blob) -> None:
+        raise NotImplementedError
 
     def validate_signature(self, signature):
         """Validate signed signature and return payload if valid.

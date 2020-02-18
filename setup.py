@@ -27,9 +27,9 @@ setup(
     author='Scott Werner',
     author_email='scott.werner.vt@gmail.com',
     url='https://github.com/scottwernervt/cloudstorage/',
-    packages=find_packages('src'),
-    package_dir={'': 'src'},
-    py_modules=[splitext(basename(path))[0] for path in glob('src/*.py')],
+    packages=find_packages(),
+    #package_dir={'': 'src'},
+    #py_modules=[splitext(basename(path))[0] for path in glob('src/*.py')],
     include_package_data=True,
     zip_safe=False,
     classifiers=[
@@ -62,7 +62,6 @@ setup(
         'minio',
     ]),
     install_requires=[
-        'inflection>=0.3.1',  # MIT
         'python-dateutil>=2.7.3',  # Simplified BSD
         'python-magic>=0.4.15',  # MIT
         # Python 3.4 needs backports

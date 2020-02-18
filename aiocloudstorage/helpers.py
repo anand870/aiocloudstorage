@@ -2,13 +2,125 @@
 import hashlib
 import mimetypes
 import os
+import re
 from _hashlib import HASH
 from typing import Dict, Generator, Optional, Tuple
+import uuid
 
 import magic
 
-from cloudstorage.typed import FileLike
+from aiocloudstorage.typed import FileLike
+from aiocloudstorage.exceptions import InvalidBucketError,InvalidFileURLError
+from aiocloudstorage import messages
 
+_VALID_BUCKETNAME_REGEX = re.compile(
+    '^[A-Za-z0-9][A-Za-z0-9\\.\\-\\_\\:]{1,61}[A-Za-z0-9]$')
+_VALID_BUCKETNAME_STRICT_REGEX = re.compile(
+    '^[a-z0-9][a-z0-9\\.\\-]{1,61}[a-z0-9]$')
+_VALID_IP_ADDRESS = re.compile(
+    r'^(\d+\.){3}\d+$')
+_ALLOWED_HOSTNAME_REGEX = re.compile(
+    '^((?!-)(?!_)[A-Z_\\d-]{1,63}(?<!-)(?<!_)\\.)*((?!_)(?!-)' +
+    '[A-Z_\\d-]{1,63}(?<!-)(?<!_))$',
+    re.IGNORECASE)
+
+
+FILE_URL_REGEX = r'^([a-z0-9A-Z]{2,}):\/\/([^\/]+)\/(.{2,})$'
+PROTOCOL_REGEX = re.compile(r'^(http|https|ssh|tcp)',re.IGNORECASE)
+STORAGE_REGEX = re.compile(r'minio|fs|gcs|s3',re.IGNORECASE)
+
+def is_file_url(url):
+    mat = re.match(FILE_URL_REGEX,url) 
+    if mat:
+        groups = mat.groups()
+        if re.search(STORAGE_REGEX,groups[0]):
+            return True
+    return False
+
+def parse_file_url(url):
+    if not is_file_url(url):
+        raise InvalidFileURLError(messages.FILE_URL_INVALID%(url,))
+    mat = re.match(FILE_URL_REGEX,url)
+    if not mat:
+        raise Exception("Unknown error occured while parsing url %s"%(url,))
+    groups = mat.groups()
+    return {'store':groups[0],'container':groups[1],'blob':groups[2]}
+def random_filename(filename=None):
+    basefolder,ext='',''
+    if filename:
+        try:
+            base,ext = os.path.splitext(filename)
+        except Exception as e:
+            base,ext=filename,''
+        basefolder = os.path.dirname(filename)
+    name = uuid.uuid4().hex
+    return os.path.join(basefolder,"%s%s"%(name,ext))
+
+def is_valid_bucket_name(bucket_name, strict):
+    """
+    Check to see if the ``bucket_name`` complies with the
+    restricted DNS naming conventions necessary to allow
+    access via virtual-hosting style.
+    :param bucket_name: Bucket name in *str*.
+    :return: True if the bucket is valid. Raise :exc:`InvalidBucketError`
+       otherwise.
+    """
+    # Verify bucket name is not empty
+    bucket_name = str(bucket_name).strip()
+    if bucket_name == '':
+        raise InvalidBucketError('Bucket name cannot be empty.')
+
+    # Verify bucket name length.
+    if len(bucket_name) < 3:
+        raise InvalidBucketError('Bucket name cannot be less than'
+                                 ' 3 characters.')
+    if len(bucket_name) > 63:
+        raise InvalidBucketError('Bucket name cannot be greater than'
+                                 ' 63 characters.')
+
+    match = _VALID_IP_ADDRESS.match(bucket_name)
+    if match:
+        raise InvalidBucketError('Bucket name cannot be an ip address')
+
+    unallowed_successive_chars = ['..', '.-', '-.']
+    if any(x in bucket_name for x in unallowed_successive_chars):
+        raise InvalidBucketError('Bucket name contains invalid '
+                'successive chars ' + str(unallowed_successive_chars) + '.')
+
+    if strict:
+        match = _VALID_BUCKETNAME_STRICT_REGEX.match(bucket_name)
+        if match is None or match.end() != len(bucket_name):
+            raise InvalidBucketError('Bucket name contains invalid '
+                                     'characters (strictly enforced).')
+
+    match = _VALID_BUCKETNAME_REGEX.match(bucket_name)
+    if match is None or match.end() != len(bucket_name):
+        raise InvalidBucketError('Bucket name does not follow S3 standards.'
+                                 ' Bucket: {0}'.format(bucket_name))
+
+    return True
+
+def clean_object_name(name):
+    #remove front and back slash from name if not a path
+    name = re.sub(r'^\/|\/$|\\/|\\','',name)
+    name = re.sub(r'\/+','/',name)
+    name = re.sub(r'[^a-z0-9A-Z\/\.\-_]','_',name)
+    name = re.sub(r'_+','_',name)
+    return name
+
+async def transfer_stream(readstream,writestream,block_size:int=1024*1024*2):
+    """
+    assumes readstream(httpstream) is asyncio compatible but 
+    writestream(filestream) is not as filestreams perform
+    better in synmode. 
+    See https://github.com/Tinche/aiofiles/issues/71
+    write stream should be opened with wb
+    """
+    while True:
+        chunk = await readstream.read(block_size)
+        if not chunk:
+            break
+        writestream.write(chunk)
 
 def read_in_chunks(file_object: FileLike,
                    block_size: int = 4096) -> Generator[bytes, None, None]:
@@ -37,7 +149,7 @@ def file_checksum(filename: FileLike, hash_type: str = 'md5',
 
     .. code-block:: python
 
-        from cloudstorage.helpers import file_checksum
+        from aiocloudstorage.helpers import file_checksum
 
         picture_path = '/path/picture.png'
         file_checksum(picture_path, hash_type='sha256')
@@ -106,7 +218,6 @@ def validate_file_or_path(filename: FileLike) -> Optional[str]:
             name = os.path.basename(str(filename.name))
         except AttributeError:
             name = None
-
     return name
 
 
@@ -128,7 +239,7 @@ def file_content_type(filename: FileLike) -> Optional[str]:
         name = validate_file_or_path(filename)
         content_type = mimetypes.guess_type(name)[0]
 
-    return content_type
+    return content_type or ''
 
 
 def parse_content_disposition(data: str) -> Tuple[Optional[str], Dict]:

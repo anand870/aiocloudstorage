@@ -9,3 +9,5 @@ FEATURE_NOT_SUPPORTED = "Feature '%s' is not supported by driver."
 LOCAL_NO_ATTRIBUTES = 'Extended filesystem attributes not supported.'
 OPTION_NOT_SUPPORTED = "Option '%s' is not supported."
 REGION_NOT_FOUND = "Unknown region name '%s'."
+STORAGE_NOT_ENABLED = "Storage not enabled in configuration."
+FILE_URL_INVALID = "File Url not valid %s"

@@ -1,203 +1,181 @@
-import shutil
-import os
-
+import io
+import asyncio
 import pytest
-
-from cloudstorage.drivers.local import LocalDriver
-from cloudstorage.exceptions import (
-    CredentialsError,
-    IsNotEmptyError,
-    NotFoundError,
-    SignatureExpiredError,
-)
+from aiocloudstorage import Container
+from aiocloudstorage.drivers.local import LocalDriver
+from aiocloudstorage.exceptions import CloudStorageError,NotFoundError
+from aiocloudstorage.helpers import file_checksum
 from tests.helpers import random_container_name, uri_validator
 from tests.settings import *
 
-if LOCAL_KEY and not os.path.exists(LOCAL_KEY):
-    os.makedirs(LOCAL_KEY)
-
-pytestmark = pytest.mark.skipif(not os.path.isdir(LOCAL_KEY),
-                                reason='Directory does not exist.')
-
-
-@pytest.fixture(scope='module')
-def storage():
-    driver = LocalDriver(key=LOCAL_KEY, secret=LOCAL_SECRET)
-
-    yield driver
-
-    for container in driver:  # cleanup
+@pytest.yield_fixture()
+async def storage():
+    storage = LocalDriver(
+               LOCAL_ENDPOINT,
+               LOCAL_SECRET
+            )
+    yield storage
+    async for container in storage.get_containers():
         if container.name.startswith(CONTAINER_PREFIX):
-            for blob in container:
-                blob.delete()
-
-            container.delete()
-
-    shutil.rmtree(LOCAL_KEY)
+            async for blob in container.get_blobs():
+                await blob.delete()
+            await container.delete()
 
 
-def test_driver_validate_credentials():
-    driver = LocalDriver(key=LOCAL_KEY)
-    assert driver.validate_credentials() is None
+@pytest.mark.asyncio
+async def test_driver_get_container(storage,container):
+    _container = await storage.get_container(container.name)
+    assert isinstance(_container,Container)
+    assert _container.name == container.name
 
-    driver = LocalDriver(key='/')
-    with pytest.raises(CredentialsError) as excinfo:
-        driver.validate_credentials()
-    assert excinfo.value
-    assert excinfo.value.message
+@pytest.mark.asyncio
+async def test_driver_get_container_raises_not_found_error(storage):
+    with pytest.raises(NotFoundError) as e:
+        container = await storage.get_container('nonexist')
 
-
-# noinspection PyShadowingNames
-def test_driver_create_container(storage):
-    container_name = random_container_name()
-    container = storage.create_container(container_name)
-    assert container_name in storage
+@pytest.mark.asyncio
+async def test_driver_create_container(storage):
+    container_name = CONTAINER_PREFIX+'mycontainer'
+    container = await storage.create_container(container_name)
     assert container.name == container_name
+    try:
+        created_container = await storage.get_container(container_name)
+    except:
+        pytest.fail('Container not created')
 
+@pytest.mark.asyncio
+async def test_driver_create_container_existing(storage,container):
+    try:
+        new_container = await storage.create_container(container.name)
+    except:
+        pytest.fail('create_container should not raise error if it already exist')
 
-# noinspection PyShadowingNames
-def test_driver_get_container(storage, container):
-    container_get = storage.get_container(container.name)
-    assert container_get.name in storage
-    assert container_get == container
+@pytest.mark.asyncio
+async def test_driver_delete_container(storage,container):
+    resp = await storage.delete_container(container)
+    with pytest.raises(NotFoundError) as e:
+        nocontainer = await storage.get_container(container.name)
+    assert resp==True
 
+@pytest.mark.asyncio
+async def test_driver_delete_container_invalid(storage):
+    try:
+        resp = await storage.delete_container(Container('nonexist',storage))
+        assert resp == False
+    except:
+        pytest.fail("delete_container should not raise error")
 
-# noinspection PyShadowingNames
-def test_container_get_invalid(storage):
+@pytest.mark.asyncio
+async def test_container_delete(storage):
     container_name = random_container_name()
+    container = await storage.create_container(container_name)
+    await container.delete()
+    with pytest.raises(NotFoundError) as e:
+        nocontainer = await storage.get_container(container.name)
 
-    # noinspection PyTypeChecker
-    with pytest.raises(NotFoundError):
-        storage.get_container(container_name)
-
-
-# noinspection PyShadowingNames
-def test_container_delete(storage):
-    container_name = random_container_name()
-    container = storage.create_container(container_name)
-    container.delete()
-    assert container.name not in storage
-
-
-def test_container_delete_not_empty(container, text_blob):
-    assert text_blob in container
-
-    # noinspection PyTypeChecker
-    with pytest.raises(IsNotEmptyError):
-        container.delete()
-
-
-def test_container_enable_cdn(container):
-    assert not container.enable_cdn(), 'Local does not support enabling CDN.'
-
-
-def test_container_disable_cdn(container):
-    assert not container.disable_cdn(), 'Local does not support disabling CDN.'
-
-
-def test_container_cdn_url(container):
-    container.enable_cdn()
-    cdn_url = container.cdn_url
-
-    assert uri_validator(cdn_url)
-    assert container.name in cdn_url
-
-
-# noinspection PyShadowingNames
-def test_container_generate_upload_url(storage, container):
-    form_post = container.generate_upload_url(BINARY_FORM_FILENAME,
-                                              **BINARY_OPTIONS)
-    assert 'url' in form_post and 'fields' in form_post
-    assert 'signature' in form_post['fields']
-
-    signature = form_post['fields']['signature']
-    payload = storage.validate_signature(signature)
-    assert payload['content_disposition'] == BINARY_OPTIONS[
-        'content_disposition']
-    assert payload['cache_control'] == BINARY_OPTIONS['cache_control']
-    assert payload['blob_name'] == BINARY_FORM_FILENAME
-    assert payload['container'] == container.name
-    assert payload['meta_data'] == BINARY_OPTIONS['meta_data']
-
-
-# noinspection PyShadowingNames
-def test_container_generate_upload_url_expiration(storage, container):
-    form_post = container.generate_upload_url(TEXT_FORM_FILENAME, expires=-10)
-    signature = form_post['fields']['signature']
-
-    with pytest.raises(SignatureExpiredError):
-        storage.validate_signature(signature)
-
-
-def test_container_get_blob(container, text_blob):
-    text_get_blob = container.get_blob(text_blob.name)
-    assert text_get_blob == text_blob
-
-
-def test_container_get_blob_invalid(container):
-    blob_name = random_container_name()
-
-    # noinspection PyTypeChecker
-    with pytest.raises(NotFoundError):
-        container.get_blob(blob_name)
-
-
-def test_blob_upload_path(container, text_filename):
-    blob = container.upload_blob(text_filename)
-    assert blob.name == TEXT_FILENAME
+@pytest.mark.asyncio
+async def test_container_upload_path(container,text_filename):
+    blob = await container.upload_blob(text_filename,blob_name=TEXT_FILENAME)
     assert blob.checksum == TEXT_MD5_CHECKSUM
+    assert blob.name == TEXT_FILENAME
 
+@pytest.mark.asyncio
+async def test_container_upload_nested_path(container,text_filename):
+    blob = await container.upload_blob(text_filename,blob_name=TEXT_FILENAME,blob_path=TEXT_NESTED_UPLOAD_PATH)
 
-def test_blob_upload_stream(container, binary_stream):
-    blob = container.upload_blob(filename=binary_stream,
-                                 blob_name=BINARY_STREAM_FILENAME,
-                                 **BINARY_OPTIONS)
+    assert blob.checksum == TEXT_MD5_CHECKSUM
+    assert blob.name == TEXT_NESTED_UPLOAD_NAME
+
+@pytest.mark.asyncio
+async def test_container_upload_nested_path_with_front_slash(container,text_filename):
+    slash_path = '/'+TEXT_NESTED_UPLOAD_PATH
+    blob = await container.upload_blob(text_filename,blob_name=TEXT_FILENAME,blob_path=slash_path)
+
+    assert blob.checksum == TEXT_MD5_CHECKSUM
+    assert blob.name == TEXT_NESTED_UPLOAD_NAME
+
+@pytest.mark.asyncio
+async def test_container_upload_nested_path_auto_name(container,text_filename):
+    blob = await container.upload_blob(text_filename,blob_name='auto',blob_path=TEXT_NESTED_UPLOAD_PATH)
+
+    assert blob.checksum == TEXT_MD5_CHECKSUM
+    assert blob.name == TEXT_NESTED_UPLOAD_NAME
+
+@pytest.mark.asyncio
+async def test_container_upload_nested_path_random_name(container,text_filename):
+    blob = await container.upload_blob(text_filename,blob_name='random',blob_path=TEXT_NESTED_UPLOAD_PATH)
+
+    assert blob.checksum == TEXT_MD5_CHECKSUM
+    assert blob.name.startswith(TEXT_NESTED_UPLOAD_PATH) == True
+
+@pytest.mark.asyncio
+async def test_container_upload_path_auto_name(container,text_filename):
+    blob = await container.upload_blob(text_filename)
+    assert blob.name == TEXT_FILENAME
+
+@pytest.mark.asyncio
+async def test_container_upload_path_random_name(container,text_filename):
+    blob = await container.upload_blob(text_filename,blob_name='random')
+    assert blob.name != TEXT_FILENAME
+    assert blob.name.endswith(TEXT_FILE_EXTENSION) == True
+
+@pytest.mark.asyncio
+async def test_container_upload_stream(container,binary_stream):
+    blob = await container.upload_blob(binary_stream,blob_name=BINARY_STREAM_FILENAME,**BINARY_OPTIONS)
     assert blob.name == BINARY_STREAM_FILENAME
     assert blob.checksum == BINARY_MD5_CHECKSUM
 
-
-@pytest.mark.skipif(
-    LOCAL_KEY.startswith('/tmp'),
-    reason='Extended attributes are not supported for tmpfs file system.')
-def test_blob_upload_options(container, binary_stream):
-    blob = container.upload_blob(binary_stream,
-                                 blob_name=BINARY_STREAM_FILENAME,
-                                 **BINARY_OPTIONS)
+@pytest.mark.asyncio
+async def test_container_upload_zero_byte_stream(container):
+    blob = await container.upload_blob(io.BytesIO(b''),blob_name=BINARY_STREAM_FILENAME,**BINARY_OPTIONS)
     assert blob.name == BINARY_STREAM_FILENAME
-    assert blob.checksum == BINARY_MD5_CHECKSUM
-    assert blob.meta_data == BINARY_OPTIONS['meta_data']
-    assert blob.content_type == BINARY_OPTIONS['content_type']
-    assert blob.content_disposition == BINARY_OPTIONS['content_disposition']
-    assert blob.cache_control == BINARY_OPTIONS['cache_control']
+    #assert blob.checksum == BINARY_MD5_CHECKSUM
+
+@pytest.mark.asyncio
+async def test_container_upload_zero_byte_stream_without_name(container):
+    blob = await container.upload_blob(io.BytesIO(b''),blob_name='auto',**BINARY_OPTIONS)
+    assert blob.checksum == ZERO_BYTE_FILE_HASH
+
+@pytest.mark.asyncio
+async def test_container_get_blob(container,text_filename):
+    blob = await container.upload_blob(text_filename,blob_name=TEXT_FILENAME)
+    newblob = await container.get_blob(blob.name)
+    assert newblob.name == blob.name
+
+@pytest.mark.asyncio
+async def test_container_get_blob_by_url(container,text_filename):
+    blob = await container.upload_blob(text_filename,blob_name=TEXT_FILENAME)
+    newblob = await container.get_blob(blob.file_url)
+    assert newblob.name == blob.name
+@pytest.mark.asyncio
+async def test_container_get_blob_invalid(container,text_filename):
+    with pytest.raises(NotFoundError) as e:
+        newblob = await container.get_blob('notablob')
+
+@pytest.mark.asyncio
+async def test_blob_file_url_on_create(container,text_filename):
+    blob = await container.upload_blob(text_filename,blob_name=TEXT_FILENAME)
+    assert blob.file_url == FILE_URL%('fs',container.name,TEXT_FILENAME)
+
+@pytest.mark.asyncio
+async def test_blob_file_url_on_get(container,text_filename):
+    text_blob = await container.upload_blob(text_filename)
+    fetch_blob = await container.get_blob(TEXT_FILENAME)
+    assert fetch_blob.file_url == FILE_URL%('fs',container.name,TEXT_FILENAME)
+
+@pytest.mark.asyncio
+async def test_blob_download_path(binary_blob, temp_file):
+    await binary_blob.download(temp_file)
+    hash_type = binary_blob.driver.hash_type
+    download_hash = file_checksum(temp_file, hash_type=hash_type)
+    assert download_hash.hexdigest() == BINARY_MD5_CHECKSUM
 
 
-def test_blob_delete(container, text_blob):
-    text_blob.delete()
-    assert text_blob not in container
+@pytest.mark.asyncio
+async def test_blob_download_stream(binary_blob, temp_file):
+    with open(temp_file, 'wb') as download_file:
+        await binary_blob.download(download_file)
+    hash_type = binary_blob.driver.hash_type
+    download_hash = file_checksum(temp_file, hash_type=hash_type)
+    assert download_hash.hexdigest() == BINARY_MD5_CHECKSUM
 
-
-def test_blob_cdn_url(binary_blob):
-    cdn_url = binary_blob.cdn_url
-    assert uri_validator(cdn_url)
-    assert binary_blob.container.name in cdn_url
-    assert binary_blob.name in cdn_url
-
-
-# noinspection PyShadowingNames
-def test_blob_generate_download_url(storage, binary_blob):
-    content_disposition = BINARY_OPTIONS.get('content_disposition')
-    signature = binary_blob.generate_download_url(
-        content_disposition=content_disposition)
-
-    payload = storage.validate_signature(signature)
-    assert payload['blob_name'] == binary_blob.name
-    assert payload['container'] == binary_blob.container.name
-    assert payload['content_disposition'] == content_disposition
-
-
-# noinspection PyShadowingNames
-def test_blob_generate_download_url_expiration(storage, binary_blob):
-    signature = binary_blob.generate_download_url(expires=-10)
-
-    with pytest.raises(SignatureExpiredError):
-        storage.validate_signature(signature)

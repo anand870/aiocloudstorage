@@ -7,14 +7,14 @@ except ImportError:
 import pytest
 import requests
 
-from cloudstorage.drivers.amazon import S3Driver
-from cloudstorage.exceptions import (
+from aiocloudstorage.drivers.amazon import S3Driver
+from aiocloudstorage.exceptions import (
     CloudStorageError,
     CredentialsError,
     IsNotEmptyError,
     NotFoundError,
 )
-from cloudstorage.helpers import file_checksum
+from aiocloudstorage.helpers import file_checksum
 from tests.helpers import random_container_name, uri_validator
 from tests.settings import *
 

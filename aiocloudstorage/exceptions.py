@@ -14,11 +14,18 @@ class CloudStorageError(Exception):
         super().__init__(message)
         self.message = message
 
+class InvalidBucketError(CloudStorageError):
+    """Base class for exceptions."""
+    pass
+
 
 class NotFoundError(CloudStorageError):
     """Raised when a container or blob does not exist."""
     code = HTTPStatus.NOT_FOUND
 
+class InvalidFileURLError(CloudStorageError):
+    """Raised when a container or blob does not exist."""
+    code = HTTPStatus.NOT_FOUND
 
 class IsNotEmptyError(CloudStorageError):
     """Raised when the container is not empty."""

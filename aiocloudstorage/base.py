@@ -1,18 +1,27 @@
 import abc
 import logging
+import warnings
 from abc import abstractmethod
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Union  # noqa: F401
 
-from cloudstorage import messages
-from cloudstorage.exceptions import NotFoundError
-from cloudstorage.typed import (
+from aiocloudstorage import messages
+from aiocloudstorage.exceptions import NotFoundError,InvalidFileURLError
+from aiocloudstorage.typed import (
     Acl,
     ContentLength,
     ExtraOptions,
     FileLike,
     FormPost,
     MetaData,
+)
+from aiocloudstorage.helpers import (
+        file_content_type, 
+        validate_file_or_path,
+        random_filename,
+        clean_object_name,
+        is_file_url,
+        parse_file_url
 )
 from .structures import CaseInsensitiveDict
 
@@ -128,47 +137,6 @@ class Blob:
             else:
                 self._attr[key] = value
 
-    def __eq__(self, other: object) -> bool:
-        """Override the default equals behavior.
-
-        :param other: The other Blob.
-        :type other: Blob
-
-        :return: True if the Blobs are the same.
-        :rtype: bool
-        """
-        if isinstance(other, self.__class__):
-            return self.checksum == other.checksum
-        return NotImplemented
-
-    def __hash__(self) -> int:
-        """Override the default hash behavior.
-
-        :return: Hash.
-        :rtype: hash
-        """
-        # TODO: QUESTION: Include extra attributes like self.name?
-        return hash(self.checksum)
-
-    def __len__(self) -> int:
-        """The blob size in bytes.
-
-        :return: bytes
-        :rtype: int
-        """
-        return self.size
-
-    def __ne__(self, other: object) -> bool:
-        """Override the default not equals behavior.
-
-        :param other: The other blob.
-        :type other: Blob
-
-        :return: True if the containers are not the same.
-        :rtype: bool
-        """
-        return not self.__eq__(other)
-
     @property
     def cdn_url(self) -> str:
         """The Content Delivery Network URL for this blob.
@@ -178,7 +146,12 @@ class Blob:
         :return: The CDN URL for this blob.
         :rtype: str
         """
-        return self.driver.blob_cdn_url(blob=self)
+        raise NotImplementedError 
+        #return self.driver.blob_cdn_url(blob=self)
+
+    @property
+    def file_url(self) -> str:
+        return self.driver.blob_file_url(blob=self)
 
     @property
     def path(self) -> str:
@@ -191,7 +164,7 @@ class Blob:
         """
         return '%s/%s' % (self.container.name, self.name)
 
-    def delete(self) -> None:
+    async def delete(self) -> None:
         """Delete this blob from the container.
 
         .. code-block:: python
@@ -206,9 +179,9 @@ class Blob:
 
         :raises NotFoundError: If the blob object doesn't exist.
         """
-        self.driver.delete_blob(blob=self)
+        await self.driver.delete_blob(blob=self)
 
-    def download(self, destination: FileLike) -> None:
+    async def download(self, destination: FileLike) -> None:
         """Download the contents of this blob into a file-like object or into
         a named file.
 
@@ -239,9 +212,9 @@ class Blob:
 
         :raises NotFoundError: If the blob object doesn't exist.
         """
-        self.driver.download_blob(self, destination)
+        await self.driver.download_blob(self, destination)
 
-    def generate_download_url(self, expires: int = 3600, method: str = 'GET',
+    async def generate_download_url(self, expires: int = 3600, method: str = 'GET',
                               content_disposition: str = None,
                               extra: ExtraOptions = None) -> str:
         """Generates a signed URL for this blob.
@@ -330,14 +303,14 @@ class Blob:
           returns urlsafe signature.
         :rtype: str
         """
-        return self.driver.generate_blob_download_url(
+        return await self.driver.generate_blob_download_url(
             blob=self,
             expires=expires,
             method=method,
             content_disposition=content_disposition,
             extra=extra)
 
-    def patch(self) -> None:
+    async def patch(self) -> None:
         """Saves all changed attributes for this blob.
 
         .. warning:: Not supported by all drivers yet.
@@ -347,11 +320,11 @@ class Blob:
 
         :raises NotFoundError: If the blob object doesn't exist.
         """
-        self.driver.patch_blob(blob=self)
+        raise NotImplementedError
+        #await self.driver.patch_blob(blob=self)
 
     def __repr__(self):
-        return '<Blob %s %s %s>' % (
-            self.name, self.container.name, self.driver.name)
+        return self.file_url
 
 
 class Container:
@@ -448,6 +421,7 @@ class Container:
         :return: True if the blob exists.
         :rtype: bool
         """
+        warnings.warn("This method has not been tested and may be removed doesnot support async")
         if hasattr(blob, 'name'):
             blob_name = blob.name
         else:
@@ -494,6 +468,7 @@ class Container:
         :return: Iterable of all blobs belonging to this container.
         :rtype: Iterable{Blob]
         """
+        warnings.warn("This method is not suitable for async")
         return self.driver.get_blobs(container=self)
 
     def __len__(self) -> int:
@@ -502,6 +477,7 @@ class Container:
         :return: Blob count in this container.
         :rtype: int
         """
+        warnings.warn("This method is not suitable for async")
         blobs = self.driver.get_blobs(container=self)
         return len(list(blobs))
 
@@ -525,9 +501,14 @@ class Container:
         :return: The CDN URL for this container.
         :rtype: str
         """
+        warnings.warn("This method is not suitable for async")
         return self.driver.container_cdn_url(container=self)
 
-    def patch(self) -> None:
+    async def get_blobs(self):
+        async for blob in self.driver.get_blobs(container=self):
+            yield blob
+
+    async def patch(self) -> None:
         """Saves all changed attributes for this container.
 
         .. warning:: Not supported by all drivers yet.
@@ -537,9 +518,9 @@ class Container:
 
         :raises NotFoundError: If the container doesn't exist.
         """
-        self.driver.patch_container(container=self)
+        await self.driver.patch_container(container=self)
 
-    def delete(self) -> None:
+    async def delete(self) -> None:
         """Delete this container.
 
         .. important:: All blob objects in the container must be deleted before
@@ -558,127 +539,50 @@ class Container:
         :raises IsNotEmptyError: If the container is not empty.
         :raises NotFoundError: If the container doesn't exist.
         """
-        self.driver.delete_container(container=self)
+        await self.driver.delete_container(container=self)
 
-    def upload_blob(self, filename: FileLike, blob_name: str = None,
+    async def upload_blob(self, filename: FileLike, blob_name: str = 'auto',blob_path='',
                     acl: str = None, meta_data: MetaData = None,
                     content_type: str = None, content_disposition: str = None,
                     cache_control: str = None, chunk_size: int = 1024,
                     extra: ExtraOptions = None) -> Blob:
-        """Upload a filename or file like object to a container.
-
-        If `content_type` is `None`, Cloud Storage will attempt to guess the
-        standard MIME type using the packages: `python-magic` or `mimetypes`. If
-        that fails, Cloud Storage will leave it up to the storage backend to
-        guess it.
-
-        .. warning:: The effect of uploading to an existing blob depends on the
-          “versioning” and “lifecycle” policies defined on the blob’s
-          container. In the absence of those policies, upload will overwrite
-          any existing contents.
-
-        Basic example:
-
-        .. code-block:: python
-
-            container = storage.get_container('container-name')
-            picture_blob = container.upload_blob('/path/picture.png')
-            # <Blob picture.png container-name S3>
-
-        Set Content-Type example:
-
-        .. code-block:: python
-
-            container = storage.get_container('container-name')
-            with open('/path/resume.doc', 'rb') as resume_file:
-                resume_blob = container.upload_blob(resume_file,
-                    content_type='application/msword')
-                resume_blob.content_type
-                # 'application/msword'
-
-        Set Metadata and ACL:
-
-        .. code-block:: python
-
-            picture_file = open('/path/picture.png', 'rb)
-                'acl': 'public-read',
-            meta_data = {
-                'owner-email': 'user.one@startup.com',
-                'owner-id': '1'
-            }
-
-            container = storage.get_container('container-name')
-            picture_blob = container.upload_blob(picture_file,
-                acl='public-read', meta_data=meta_data)
-            picture_blob.meta_data
-            # {owner-id': '1', 'owner-email': 'user.one@startup.com'}
-
-        References:
-
-        * `Boto 3: PUT Object
-          <https://boto3.amazonaws.com/v1/documentation/api/latest/reference/
-          services/s3.html#S3.Client.put_object>`_
-        * `Google Cloud Storage: upload_from_file / upload_from_filename
-          <https://googleapis.github.io/google-cloud-python/latest/storage/blobs.html>`_
-        * `Rackspace Cloud Files: Create or update object
-          <https://developer.rackspace.com/docs/cloud-files/v1/
-          storage-api-reference/object-services-operations/
-          #create-or-update-object>`_
-
-        :param filename: A file handle open for reading or the path to the file.
-        :type filename: file or str
-
-        :param acl: (optional) Blob canned Access Control List (ACL).
-                    If `None`, defaults to storage backend default.
-
-                    * private
-                    * public-read
-                    * public-read-write
-                    * authenticated-read
-                    * bucket-owner-read
-                    * bucket-owner-full-control
-                    * aws-exec-read (Amazon S3)
-                    * project-private (Google Cloud Storage)
-        :type acl: str or None
-
-        :param blob_name: (optional) Override the blob's name. If not set, will
-          default to the filename from path or filename of iterator object.
-        :type blob_name: str or None
-
-        :param meta_data: (optional) A map of metadata to store with the blob.
-        :type meta_data: Dict[str, str] or None
-
-        :param content_type: (optional) A standard MIME type describing the
-          format of the object data.
-        :type content_type: str or None
-
-        :param content_disposition: (optional) Specifies presentational
-          information for the blob.
-        :type content_disposition: str or None
-
-        :param cache_control: (optional) Specify directives for caching
-         mechanisms for the blob.
-        :type cache_control: str or None
-
-        :param chunk_size: (optional) Optional chunk size for streaming a
-          transfer.
-        :type chunk_size: int
-
-        :param extra: (optional) Extra parameters for the request.
-        :type extra: Dict[str, str] or None
-
-        :return: The uploaded blob.
-        :rtype: Blob
         """
-        return self.driver.upload_blob(container=self, filename=filename,
-                                       blob_name=blob_name, acl=acl,
-                                       meta_data=meta_data,
-                                       content_type=content_type,
-                                       content_disposition=content_disposition,
-                                       cache_control=cache_control,
-                                       chunk_size=chunk_size, extra=extra)
+        blob_name: 
+            auto - get from filename if fileobject
+            random - generate using uuid
+            blob_name - use blob name overrides file if already exists
+        """
+        tmp_name = validate_file_or_path(filename)
+        if tmp_name is None:
+            tmp_name = random_filename()
+        if blob_name == 'auto':
+            blob_name = tmp_name
+        elif blob_name == 'random':
+            blob_name = random_filename(tmp_name)
+            max_retries = 5
+            attempt = 0
+            while attempt < max_retries:
+                try:
+                    found = await self.get_blob(blob_name)
+                except NotFoundError as err:
+                    break
+                attempt+=1
+        blob_name = clean_object_name(blob_name)
+        return await self.driver.upload_blob(
+                container=self, 
+                filename=filename,
+                blob_name=blob_name,
+                blob_path=blob_path,
+                acl=acl,
+                meta_data=meta_data,
+                content_type=content_type,
+                content_disposition=content_disposition,
+                cache_control=cache_control,
+                chunk_size=chunk_size, 
+                extra=extra
+            )
 
-    def get_blob(self, blob_name: str) -> Blob:
+    async def get_blob(self, blob_name: str) -> Blob:
         """Get a blob object by name.
 
         .. code-block:: python
@@ -695,9 +599,16 @@ class Container:
 
         :raise NotFoundError: If the blob object doesn't exist.
         """
-        return self.driver.get_blob(container=self, blob_name=blob_name)
+        
+        if is_file_url(blob_name):
+            meta = parse_file_url(blob_name)
+            if not meta or meta['container']!=self.name or meta['store']!=self.driver.alias_name:
+                raise InvalidFileURLError(messages.FILE_URL_INVALID%(blob_name,))
+            blob_name = meta['blob']
 
-    def generate_upload_url(self, blob_name: str, expires: int = 3600,
+        return await self.driver.get_blob(container=self, blob_name=blob_name)
+
+    async def generate_upload_url(self, blob_name: str, expires: int = 3600,
                             acl: str = None, meta_data: MetaData = None,
                             content_disposition: str = None,
                             content_length: ContentLength = None,
@@ -869,7 +780,7 @@ class Container:
           policy).
         :rtype: Dict[Any, Any]
         """
-        return self.driver.generate_container_upload_url(
+        return await self.driver.generate_container_upload_url(
             container=self,
             blob_name=blob_name,
             expires=expires, acl=acl,
@@ -886,6 +797,7 @@ class Container:
         :return: True if successful or false if not supported.
         :rtype: bool
         """
+        warnings.warn("CDN not supported yet")
         return self.driver.enable_container_cdn(container=self)
 
     def disable_cdn(self) -> bool:
@@ -894,6 +806,7 @@ class Container:
         :return: True if successful or false if not supported.
         :rtype: bool
         """
+        warnings.warn("CDN not supported yet")
         return self.driver.disable_container_cdn(container=self)
 
     def __repr__(self):
@@ -935,64 +848,13 @@ class Driver(metaclass=abc.ABCMeta):
     #: Unique `str` driver URL.
     url = None  # type: Optional[str]
 
-    def __init__(self, key: str = None, secret: str = None, region: str = None,
+    def __init__(self, key: str = None, secret: str = None, region: str = None, alias_name='',
                  **kwargs: Dict) -> None:
         self.key = key
         self.secret = secret
         self.region = region
+        self.alias_name = alias_name
 
-    def __contains__(self, container) -> bool:
-        """Determines whether or not the container exists.
-
-        .. code: python
-
-            container = storage.get_container('container-name')
-
-            container in storage
-            # True
-
-            'container-name' in storage
-            # True
-
-        :param container: Container or container name.
-        :type container: cloudstorage.Container or str
-
-        :return: True if the container exists.
-        :rtype: bool
-        """
-        if hasattr(container, 'name'):
-            container_name = container.name
-        else:
-            container_name = container
-
-        try:
-            self.get_container(container_name=container_name)
-            return True
-        except NotFoundError:
-            return False
-
-    @abstractmethod
-    def __iter__(self) -> Iterable['Container']:
-        """Get all containers associated to the driver.
-
-        .. code-block:: python
-
-            for container in storage:
-                print(container.name)
-
-        :yield: Iterator of all containers belonging to this driver.
-        :yield type: Iterable[:class:`.Container`]
-        """
-        pass
-
-    @abstractmethod
-    def __len__(self) -> int:
-        """The total number of containers in the driver.
-
-        :return: Number of containers belonging to this driver.
-        :rtype: int
-        """
-        pass
 
     @staticmethod
     @abstractmethod
@@ -1020,28 +882,10 @@ class Driver(metaclass=abc.ABCMeta):
         """
         pass
 
-    @abstractmethod
-    def validate_credentials(self) -> None:
-        """Validate driver credentials (key and secret).
 
-        :return: None
-        :rtype: None
-        :raises CredentialsError: If driver authentication fails.
-        """
-        pass
-
-    @property
-    @abstractmethod
-    def regions(self) -> List[str]:
-        """List of supported regions for this driver.
-
-        :return: List of region strings.
-        :rtype: list[str]
-        """
-        pass
 
     @abstractmethod
-    def create_container(self, container_name: str, acl: str = None,
+    async def create_container(self, container_name: str, acl: str = None,
                          meta_data: MetaData = None) -> 'Container':
         """Create a new container.
 
@@ -1083,6 +927,10 @@ class Driver(metaclass=abc.ABCMeta):
         pass
 
     @abstractmethod
+    def get_containers(self):
+        pass
+
+    @abstractmethod
     def get_container(self, container_name: str) -> 'Container':
         """Get a container by name.
 
@@ -1103,21 +951,6 @@ class Driver(metaclass=abc.ABCMeta):
         """
         pass
 
-    @abstractmethod
-    def patch_container(self, container: 'Container') -> None:
-        """Saves all changed attributes for the container.
-
-        .. important:: This class method is called by :meth:`.Container.save`.
-
-        :param container: A container instance.
-        :type container: :class:`.Container`
-
-        :return: NoneType
-        :rtype: None
-
-        :raises NotFoundError: If the container doesn't exist.
-        """
-        pass
 
     @abstractmethod
     def delete_container(self, container: 'Container') -> None:
@@ -1136,49 +969,49 @@ class Driver(metaclass=abc.ABCMeta):
         """
         pass
 
-    @abstractmethod
-    def container_cdn_url(self, container: 'Container') -> str:
-        """The Content Delivery Network URL for this container.
+#    @abstractmethod
+#    def container_cdn_url(self, container: 'Container') -> str:
+#        """The Content Delivery Network URL for this container.
+#
+#        .. important:: This class method is called by
+#          :attr:`.Container.cdn_url`.
+#
+#        :return: The CDN URL for this container.
+#        :rtype: str
+#        """
+#        pass
 
-        .. important:: This class method is called by
-          :attr:`.Container.cdn_url`.
+#    @abstractmethod
+#    def enable_container_cdn(self, container: 'Container') -> bool:
+#        """(Optional) Enable Content Delivery Network (CDN) for the container.
+#
+#        .. important:: This class method is called by
+#          :meth:`.Container.enable_cdn`.
+#
+#        :param container: A container instance.
+#        :type container: :class:`.Container`
+#
+#        :return: True if successful or false if not supported.
+#        :rtype: bool
+#        """
+#        logger.warning(messages.FEATURE_NOT_SUPPORTED, 'enable_container_cdn')
+#        return False
 
-        :return: The CDN URL for this container.
-        :rtype: str
-        """
-        pass
-
-    @abstractmethod
-    def enable_container_cdn(self, container: 'Container') -> bool:
-        """(Optional) Enable Content Delivery Network (CDN) for the container.
-
-        .. important:: This class method is called by
-          :meth:`.Container.enable_cdn`.
-
-        :param container: A container instance.
-        :type container: :class:`.Container`
-
-        :return: True if successful or false if not supported.
-        :rtype: bool
-        """
-        logger.warning(messages.FEATURE_NOT_SUPPORTED, 'enable_container_cdn')
-        return False
-
-    @abstractmethod
-    def disable_container_cdn(self, container: 'Container') -> bool:
-        """(Optional) Disable Content Delivery Network (CDN) on the container.
-
-        .. important:: This class method is called by
-          :meth:`.Container.disable_cdn`.
-
-        :param container: A container instance.
-        :type container: :class:`.Container`
-
-        :return: True if successful or false if not supported.
-        :rtype: bool
-        """
-        logger.warning(messages.FEATURE_NOT_SUPPORTED, 'disable_container_cdn')
-        return False
+#    @abstractmethod
+#    def disable_container_cdn(self, container: 'Container') -> bool:
+#        """(Optional) Disable Content Delivery Network (CDN) on the container.
+#
+#        .. important:: This class method is called by
+#          :meth:`.Container.disable_cdn`.
+#
+#        :param container: A container instance.
+#        :type container: :class:`.Container`
+#
+#        :return: True if successful or false if not supported.
+#        :rtype: bool
+#        """
+#        logger.warning(messages.FEATURE_NOT_SUPPORTED, 'disable_container_cdn')
+#        return False
 
     @abstractmethod
     def upload_blob(self, container: 'Container', filename: FileLike,
@@ -1417,6 +1250,9 @@ class Driver(metaclass=abc.ABCMeta):
         :rtype: str
         """
         pass
+
+    def blob_file_url(self,blob: Blob) -> str:
+        return '%s://%s/%s'%(self.alias_name,blob.container.name,blob.name)
 
     def __repr__(self):
         if self.region:
