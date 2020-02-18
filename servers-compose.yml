@@ -1,0 +1,49 @@
+version: "3.7"
+services:
+  pypiserver:
+    image: pypiserver/pypiserver:latest
+    volumes:
+      - pypi-data:/data/packages
+    ports:
+      - "9000:8080"
+    networks:
+      - rnd
+
+  minio:
+    image: minio/minio:RELEASE.2020-02-07T23-28-16Z
+    hostname: minio
+    volumes:
+      - minio-data:/export
+    ports:
+      - "9001:9000"
+    networks:
+      # On the internal you are exposed as minio1/2/3/4 by default
+      rnd:
+        aliases:
+          - minio-cluster
+    environment:
+      MINIO_ACCESS_KEY: minio
+      MINIO_SECRET_KEY: minio123
+    deploy:
+      restart_policy:
+        delay: 10s
+        max_attempts: 10
+        window: 60s
+      placement:
+        constraints:
+          - node.labels.minio==true
+    command: server /export
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+volumes:
+  pypi-data:
+  minio-data:
+
+networks:
+  rnd:
+    name: rnd-network
+
