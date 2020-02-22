@@ -13,6 +13,7 @@ from typing import Dict, Iterable, List
 import filelock
 import itsdangerous
 import xattr
+import asyncio
 
 from aiocloudstorage import Blob, Container, Driver, messages
 from aiocloudstorage.utils import camelize, underscore
@@ -29,7 +30,8 @@ from aiocloudstorage.helpers import (
     read_in_chunks,
     validate_file_or_path,
     is_valid_bucket_name,
-    clean_object_name
+    clean_object_name,
+    transfer_stream,
 )
 from aiocloudstorage.typed import (
     ContentLength,
@@ -458,8 +460,15 @@ class LocalDriver(Driver):
                 shutil.copy(filename, blob_path)
             else:
                 with open(blob_path, 'wb') as blob_file:
-                    for data in filename:
-                        blob_file.write(data)
+                    if hasattr(filename,'read'):
+                        if asyncio.iscoroutinefunction(filename.read):
+                            await transfer_stream(filename,blob_file)
+                        else:
+                            while True:
+                                chunk= filename.read(1024)
+                                if not chunk:
+                                    break
+                                blob_file.write(chunk)
 
         # Disable execute mode on file
         os.chmod(blob_path, int('664', 8))

@@ -10,7 +10,7 @@ import uuid
 import magic
 
 from aiocloudstorage.typed import FileLike
-from aiocloudstorage.exceptions import InvalidBucketError,InvalidFileURLError
+from aiocloudstorage.exceptions import InvalidBucketError,InvalidFileURLError,FileEmptyError
 from aiocloudstorage import messages
 
 _VALID_BUCKETNAME_REGEX = re.compile(
@@ -193,6 +193,27 @@ def file_checksum(filename: FileLike, hash_type: str = 'md5',
 
     return file_hash
 
+def check_file_not_empty(filename):
+    if isinstance(filename, str):
+        with open(filename,'rb') as f:
+            chunk = f.read(1)
+            f.seek(0)
+            if not chunk:
+                raise FileEmptyError(messages.FILE_EMPTY%(filename))
+    elif hasattr(filename,'file'):
+        "in case of fileupload in fast api the file is in file attr"
+        filename.file.seek(0)
+        chunk = filename.file.read(1)
+        filename.file.seek(0)
+        if not chunk:
+            raise FileEmptyError(messages.FILE_EMPTY%(filename))
+    elif hasattr(filename,'read'):
+        chunk = filename.read(1)
+        filename.seek(0)
+        if not chunk:
+            raise FileEmptyError(messages.FILE_EMPTY%(filename))
+    
+
 
 def validate_file_or_path(filename: FileLike) -> Optional[str]:
     """Return filename from file path or from file like object.
@@ -214,9 +235,14 @@ def validate_file_or_path(filename: FileLike) -> Optional[str]:
             raise FileNotFoundError(filename)
         name = os.path.basename(filename)
     else:
-        try:
+        if hasattr(filename,'name'):
             name = os.path.basename(str(filename.name))
-        except AttributeError:
+        elif hasattr(filename,'filename'):
+            """
+            uploaded file in fastapi has filename as name
+            """
+            name = filename.filename
+        else:
             name = None
     return name
 

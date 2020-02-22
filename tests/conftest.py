@@ -5,7 +5,7 @@ import shutil
 
 import pytest
 
-from tests.helpers import random_container_name
+from tests.helpers import random_container_name,UploadFile
 from tests.settings import *
 
 ROOT = os.path.dirname(os.path.realpath(__file__))
@@ -55,6 +55,11 @@ async def text_blob(container, text_filename):
 @pytest.fixture(scope='session')
 def binary_filename():
     return os.path.join(ROOT, 'data', BINARY_FILENAME)
+
+@pytest.fixture(scope="function")
+def upload_stream(binary_filename):
+    with open(binary_filename, 'rb') as binary_stream:
+        yield UploadFile(BINARY_FILENAME,file=binary_stream)
 
 
 # noinspection PyShadowingNames

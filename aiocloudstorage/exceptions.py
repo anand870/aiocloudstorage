@@ -14,6 +14,9 @@ class CloudStorageError(Exception):
         super().__init__(message)
         self.message = message
 
+class FileEmptyError(CloudStorageError):
+    code = HTTPStatus.UNPROCESSABLE_ENTITY
+
 class InvalidBucketError(CloudStorageError):
     """Base class for exceptions."""
     pass

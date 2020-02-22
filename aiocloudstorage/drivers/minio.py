@@ -342,6 +342,9 @@ class MinioDriver(Driver):
             if isinstance(filename, str):
                 with open(filename,'rb') as f:
                     await s3.put_object(Key=blob_name,Body=f,Bucket=container.name,**extra_args)
+            elif hasattr(filename,'file'):
+                #fastapi Upload file has file inside fileobject
+                await s3.put_object(Key=blob_name,Body=filename.file,Bucket=container.name,**extra_args)
             else:
                 await s3.put_object(Key=blob_name,Body=filename,Bucket=container.name,**extra_args)
 

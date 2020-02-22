@@ -3,7 +3,7 @@ import asyncio
 import pytest
 from aiocloudstorage import Container
 from aiocloudstorage.drivers.local import LocalDriver
-from aiocloudstorage.exceptions import CloudStorageError,NotFoundError
+from aiocloudstorage.exceptions import CloudStorageError,NotFoundError,FileEmptyError
 from aiocloudstorage.helpers import file_checksum
 from tests.helpers import random_container_name, uri_validator
 from tests.settings import *
@@ -126,15 +126,22 @@ async def test_container_upload_stream(container,binary_stream):
     assert blob.checksum == BINARY_MD5_CHECKSUM
 
 @pytest.mark.asyncio
-async def test_container_upload_zero_byte_stream(container):
-    blob = await container.upload_blob(io.BytesIO(b''),blob_name=BINARY_STREAM_FILENAME,**BINARY_OPTIONS)
+async def test_container_upload_uploadstream(container,upload_stream):
+    blob = await container.upload_blob(upload_stream,blob_name=BINARY_STREAM_FILENAME,**BINARY_OPTIONS)
     assert blob.name == BINARY_STREAM_FILENAME
+    assert blob.checksum == BINARY_MD5_CHECKSUM
+
+@pytest.mark.asyncio
+async def test_container_upload_zero_byte_stream(container):
+    with pytest.raises(FileEmptyError) as err:
+        blob = await container.upload_blob(io.BytesIO(b''),blob_name=BINARY_STREAM_FILENAME,**BINARY_OPTIONS)
+    #assert blob.name == BINARY_STREAM_FILENAME
     #assert blob.checksum == BINARY_MD5_CHECKSUM
 
 @pytest.mark.asyncio
 async def test_container_upload_zero_byte_stream_without_name(container):
-    blob = await container.upload_blob(io.BytesIO(b''),blob_name='auto',**BINARY_OPTIONS)
-    assert blob.checksum == ZERO_BYTE_FILE_HASH
+    with pytest.raises(FileEmptyError) as err:
+        blob = await container.upload_blob(io.BytesIO(b''),blob_name='auto',**BINARY_OPTIONS)
 
 @pytest.mark.asyncio
 async def test_container_get_blob(container,text_filename):

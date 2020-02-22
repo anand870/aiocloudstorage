@@ -1,4 +1,5 @@
 import pytest
+import io
 
 from aiocloudstorage.helpers import (
     file_checksum,
@@ -11,9 +12,11 @@ from aiocloudstorage.helpers import (
     random_filename,
     is_file_url,
     parse_file_url,
+    check_file_not_empty,
 )
-from aiocloudstorage.exceptions import InvalidBucketError,InvalidFileURLError
+from aiocloudstorage.exceptions import InvalidBucketError,InvalidFileURLError,FileEmptyError
 from tests.settings import *
+from tests.helpers import UploadFile
 
 
 def test_read_in_chunks(binary_stream):
@@ -132,3 +135,10 @@ def test_parse_file_url():
         parse_file_url('SSh://trash123/abc/jhfdf$#122.jpg')
     with pytest.raises(Exception) as err:
         parse_file_url('HTTP://trash123/abc/jhfdf$#122.jpg')
+
+def test_check_file_not_empty():
+    with pytest.raises(FileEmptyError) as err:
+        check_file_not_empty(io.BytesIO(b''))
+    with pytest.raises(FileEmptyError) as err:
+        check_file_not_empty(UploadFile('random'))
+

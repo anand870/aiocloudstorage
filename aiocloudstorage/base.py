@@ -21,7 +21,8 @@ from aiocloudstorage.helpers import (
         random_filename,
         clean_object_name,
         is_file_url,
-        parse_file_url
+        parse_file_url,
+        check_file_not_empty
 )
 from .structures import CaseInsensitiveDict
 
@@ -552,6 +553,7 @@ class Container:
             random - generate using uuid
             blob_name - use blob name overrides file if already exists
         """
+        check_file_not_empty(filename)
         tmp_name = validate_file_or_path(filename)
         if tmp_name is None:
             tmp_name = random_filename()
