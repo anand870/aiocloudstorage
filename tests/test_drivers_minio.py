@@ -134,6 +134,12 @@ async def test_container_upload_uploadstream(container,upload_stream):
     assert blob.checksum == BINARY_MD5_CHECKSUM
 
 @pytest.mark.asyncio
+async def test_container_upload_uploadstream_without_name(container,upload_stream):
+    blob = await container.upload_blob(upload_stream,blob_name='random',**BINARY_OPTIONS)
+    assert blob.name.endswith(BINARY_FILENAME_EXTENSION)
+    assert blob.checksum == BINARY_MD5_CHECKSUM
+
+@pytest.mark.asyncio
 async def test_container_upload_zero_byte_stream(container):
     with pytest.raises(FileEmptyError) as err:
         blob = await container.upload_blob(io.BytesIO(b''),blob_name=BINARY_STREAM_FILENAME,**BINARY_OPTIONS)

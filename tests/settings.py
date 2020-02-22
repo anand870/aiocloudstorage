@@ -25,6 +25,7 @@ TEXT_NESTED_UPLOAD_NAME = 'uploads/images/flask.txt'
 FILE_URL='%s://%s/%s' 
 
 BINARY_FILENAME = 'avatar.png'
+BINARY_FILENAME_EXTENSION = '.png'
 BINARY_FORM_FILENAME = 'avatar-form.png'
 BINARY_STREAM_FILENAME = 'avatar-stream.png'
 BINARY_MD5_CHECKSUM = '2f907a59924ad96b7478074ed96b05f0'
