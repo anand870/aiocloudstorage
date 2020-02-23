@@ -2,7 +2,7 @@ import sys
 import pytest
 import asyncio
 import aiobotocore
-from aiocloudstorage.drivers.amazon import S3Driver
+from aiocloudstorage.drivers.minio import MinioDriver
 from tests.settings import *
 
 @pytest.fixture()
@@ -10,10 +10,10 @@ async def default_bucket():
     loop = asyncio.get_running_loop()
     session = aiobotocore.get_session(loop=loop)
     async with session.create_client('s3', 
-            region_name=AMAZON_REGION,
-            endpoint_url=AMAZON_ENDPOINT_URL,
-            aws_access_key_id=AMAZON_KEY,
-            aws_secret_access_key=AMAZON_SECRET
+            region_name=MINIO_REGION,
+            endpoint_url=MINIO_ENDPOINT,
+            aws_access_key_id=MINIO_ACCESS_KEY,
+            aws_secret_access_key=MINIO_SECRET_KEY
         ) as client:
         bucket_name = CONTAINER_PREFIX+'default'
         try:

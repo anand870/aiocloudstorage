@@ -271,10 +271,19 @@ async def bulk_upload(filedict:Dict,destfilename:str='random',destpath:str='',co
         task = upload(_file,destfilename,destpath,container=container)
         tasks.append(asyncio.create_task(task))
         keys.append(key)
-    blobs = await asyncio.gather(*tasks)
+    return_exceptions = kwargs.get('return_exceptions',True)
+    return_blobs = kwargs.get('return_blobs',False)
+    blobs = await asyncio.gather(*tasks,return_exceptions=return_exceptions)
     file_urls = {}
-    for index,key in enumerate(keys):
-        file_urls[key]=blobs[index].file_url
+    if not return_blobs:
+        for index,key in enumerate(keys):
+            if isinstance(blobs[index],Exception):
+                file_urls[key] = blobs[index]
+            else:
+                file_urls[key]=blobs[index].file_url
+    else:
+        for index,key in enumerate(keys):
+            file_urls[key] = blobs[index]
     return file_urls
 
 
