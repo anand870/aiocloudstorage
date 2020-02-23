@@ -1,4 +1,5 @@
 import os
+import io
 import pytest
 from aiocloudstorage.drivers.minio import MinioDriver
 from tests.settings import *
@@ -143,6 +144,26 @@ async def test_bulk_upload(container):
     assert len(files) == filecount
     hash_type = container.driver.hash_type
     for key,fileurl in files.items():
+        iostreams[key].seek(0)
+        download_hash = file_checksum(iostreams[key],hash_type=hash_type)
+        blob = await container.get_blob(fileurl)
+        assert blob.name.startswith(destpath)
+        assert blob.checksum == download_hash.hexdigest()
+
+@pytest.mark.asyncio
+async def test_bulk_upload_with_one_invalid(container):
+    filecount = 10
+    iostreams = binary_iostreams(filecount)
+    iostreams[filecount+1] = io.BytesIO(b'')
+    destpath = random_container_name()
+    files = await bulk_upload(iostreams,destpath='/'+destpath)
+    assert isinstance(files,dict)
+    assert len(files) == filecount+1
+    hash_type = container.driver.hash_type
+    for key,fileurl in files.items():
+        if key==(filecount+1):
+            assert isinstance(fileurl,Exception)
+            continue
         iostreams[key].seek(0)
         download_hash = file_checksum(iostreams[key],hash_type=hash_type)
         blob = await container.get_blob(fileurl)
